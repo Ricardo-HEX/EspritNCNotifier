@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dita>
+  <topic id="EspritNcNotifier.Post">
+    <title id="EspritNcNotifier.Post.title">Código NC y notificación</title>
+    <abstract id="EspritNcNotifier.Post.abstract">
+      <shortdesc>Utiliza los archivos de posprocesador definidos para la máquina para convertir operaciones de mecanizado a código NC y preparar una notificación por correo electrónico.</shortdesc>
+      <p>Puede generar código NC para todas las operaciones de mecanizado del documento ESPRIT o para las operaciones seleccionadas. El archivo se guarda en la carpeta NC situada junto al documento.</p>
+      <p>Al finalizar el posprocesado, guarda junto al código NC una captura PNG limpia de la pieza en vista isométrica, ocultando temporalmente geometrías, superficies, curvas, características generales y de agujero, trayectorias y anotaciones. Después restaura la vista original, abre un mensaje en la aplicación de correo predeterminada y muestra la carpeta con la captura seleccionada para poder arrastrarla al mensaje. También recuerda el último destinatario utilizado.</p>
+    </abstract>
+  </topic>
+</dita>
