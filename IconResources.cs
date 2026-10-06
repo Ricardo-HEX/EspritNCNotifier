@@ -15,7 +15,7 @@ namespace EspritNcNotifier
                 if (stream == null)
                     throw new InvalidOperationException("No se encontró el icono incrustado: " + ResourceName);
 
-                using (var source = new Icon(stream, new Size(32, 32)))
+                using (var source = new Icon(stream))
                     return (Icon)source.Clone();
             }
         }

@@ -12,18 +12,20 @@ namespace EspritNcNotifier
     {
         private readonly TextBox _name = new TextBox();
         private readonly TextBox _email = new TextBox();
+        private readonly TextBox _folder = new TextBox();
         public string NcName => _name.Text.Trim();
         public string Recipient => _email.Text.Trim();
+        public string NcFolder => _folder.Text.Trim();
 
-        public JobDialog(int operationCount, bool allOperations, string folder, string suggestedName, string email, string postSummary)
+        public JobDialog(int operationCount, bool allOperations, string folder, string suggestedName, string email, string machineName, string postSummary)
         {
             Text = "Postprocesar y preparar correo"; FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterScreen;
-            MaximizeBox = MinimizeBox = false; Width = 650; Height = 350;
-            var table = NewTable(6);
+            MaximizeBox = MinimizeBox = false; Width = 650; Height = 380;
+            var table = NewTable(7); table.Height = 270;
             AddRow(table, 0, "Operaciones:", allOperations ? $"Programa completo ({operationCount})" : $"{operationCount} seleccionada(s)");
-            AddRow(table, 1, "Postprocesador:", postSummary); AddRow(table, 2, "Carpeta NC:", folder);
-            AddEditRow(table, 3, "Nombre NC:", _name, suggestedName); AddEditRow(table, 4, "Enviar a:", _email, email);
-            table.Controls.Add(new Label { Text = "Se abrirá un mensaje preparado en la aplicación de correo predeterminada. El último destinatario se recordará.", AutoSize = true, MaximumSize = new Size(450, 45) }, 1, 5);
+            AddRow(table, 1, "Máquina:", machineName); AddRow(table, 2, "Postprocesador:", postSummary); AddFolderRow(table, 3, folder);
+            AddEditRow(table, 4, "Nombre NC:", _name, suggestedName); AddEditRow(table, 5, "Enviar a:", _email, email);
+            table.Controls.Add(new Label { Text = "Se abrirá un mensaje preparado en la aplicación de correo predeterminada. El último destinatario se recordará.", AutoSize = true, MaximumSize = new Size(450, 45) }, 1, 6);
             Controls.Add(table);
             var buttons = NewButtons(OnAccept); Controls.Add(buttons); AcceptButton = buttons.Controls.OfType<Button>().First(b => b.DialogResult == DialogResult.OK);
         }
@@ -33,11 +35,52 @@ namespace EspritNcNotifier
             if (string.IsNullOrWhiteSpace(NcName) || NcName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) { MessageBox.Show("Introduce un nombre de fichero válido.", Text); DialogResult = DialogResult.None; return; }
             try { foreach (string address in Recipient.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)) _ = new MailAddress(address.Trim()); if (string.IsNullOrWhiteSpace(Recipient)) throw new FormatException(); }
             catch { MessageBox.Show("Introduce una dirección de correo válida.", Text); DialogResult = DialogResult.None; }
+            if (DialogResult == DialogResult.None) return;
+            try
+            {
+                if (string.IsNullOrWhiteSpace(NcFolder)) throw new InvalidOperationException();
+                Directory.CreateDirectory(NcFolder);
+                string testFile = Path.Combine(NcFolder, ".esprit_write_test_" + Guid.NewGuid().ToString("N") + ".tmp");
+                try { using (File.Create(testFile)) { } }
+                finally { if (File.Exists(testFile)) File.Delete(testFile); }
+            }
+            catch
+            {
+                MessageBox.Show("La carpeta NC no existe o no permite guardar archivos.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                DialogResult = DialogResult.None;
+            }
         }
 
         internal static TableLayoutPanel NewTable(int rows) => new TableLayoutPanel { Dock = DockStyle.Top, Height = 240, Padding = new Padding(12), ColumnCount = 2, RowCount = rows, ColumnStyles = { new ColumnStyle(SizeType.Absolute, 125), new ColumnStyle(SizeType.Percent, 100) } };
-        internal static void AddRow(TableLayoutPanel t, int row, string label, string value) { t.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, row); t.Controls.Add(new Label { Text = value, AutoSize = true, MaximumSize = new Size(450, 40), Anchor = AnchorStyles.Left }, 1, row); }
+        internal static void AddRow(TableLayoutPanel t, int row, string label, string value) { t.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Top }, 0, row); t.Controls.Add(new Label { Text = value, AutoSize = true, MaximumSize = new Size(450, 40), Anchor = AnchorStyles.Left | AnchorStyles.Top }, 1, row); }
         internal static void AddEditRow(TableLayoutPanel t, int row, string label, TextBox box, string value) { box.Text = value; box.Dock = DockStyle.Fill; t.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, row); t.Controls.Add(box, 1, row); }
+        private void AddFolderRow(TableLayoutPanel table, int row, string folder)
+        {
+            _folder.Text = folder; _folder.ReadOnly = true; _folder.Dock = DockStyle.Fill;
+            var browse = new Button { Text = "…", Width = 34, Height = 24, Margin = new Padding(5, 0, 0, 0) };
+            browse.Click += (sender, args) =>
+            {
+                using (var dialog = new OpenFileDialog
+                {
+                    Title = "Seleccionar carpeta para el NC y la captura",
+                    InitialDirectory = Directory.Exists(NcFolder) ? NcFolder : folder,
+                    FileName = "Seleccionar esta carpeta",
+                    Filter = "Carpeta|*.folder",
+                    CheckFileExists = false,
+                    CheckPathExists = true,
+                    ValidateNames = false,
+                    DereferenceLinks = true,
+                    AutoUpgradeEnabled = true
+                })
+                    if (dialog.ShowDialog(this) == DialogResult.OK) _folder.Text = Path.GetDirectoryName(dialog.FileName);
+            };
+            var panel = new TableLayoutPanel { Dock = DockStyle.Fill, Height = 26, MinimumSize = new Size(0, 26), MaximumSize = new Size(0, 26), Margin = new Padding(0), ColumnCount = 2, RowCount = 1 };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+            panel.Controls.Add(_folder, 0, 0); panel.Controls.Add(browse, 1, 0);
+            table.Controls.Add(new Label { Text = "Carpeta NC:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, row);
+            table.Controls.Add(panel, 1, row);
+        }
         private FlowLayoutPanel NewButtons(EventHandler accept)
         {
             var p = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 52, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(8) };

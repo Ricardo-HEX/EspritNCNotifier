@@ -102,13 +102,25 @@ namespace EspritNcNotifier
             dynamic ncOutput = EnsureNcOutput(doc, ncFolder, suggested); if (ncOutput == null) return;
             string postSummary = GetPostSummary(ncOutput);
             string machineName = GetMachineName(doc);
-            using (var dialog = new JobDialog(selected.Count, all, ncFolder, suggested, _settings.LastRecipient, postSummary))
+            using (var dialog = new JobDialog(selected.Count, all, ncFolder, suggested, _settings.LastRecipient, machineName, postSummary))
             {
                 if (dialog.ShowDialog() != DialogResult.OK) return;
                 _settings.LastRecipient = dialog.Recipient; _settings.Save();
-                string[] files = Postprocess(doc, selected, ncOutput, ncFolder, dialog.NcName);
+                ncFolder = dialog.NcFolder;
+                ncOutput.NCFileFolder = ncFolder;
+                ncOutput.NCFileName = dialog.NcName;
+                string[] files;
+                try { files = Postprocess(doc, selected, ncOutput, ncFolder, dialog.NcName); }
+                catch (PostprocessorExecutionException)
+                {
+                    ncOutput = ConfigureNcOutput(doc.InitialMachineSetup.NCOutputs, ncOutput, ncFolder, dialog.NcName);
+                    if (ncOutput == null) return;
+                    ncOutput.Enabled = true;
+                    postSummary = GetPostSummary(ncOutput);
+                    files = Postprocess(doc, selected, ncOutput, ncFolder, dialog.NcName);
+                }
                 string imageFile = CapturePartView(doc, ncFolder, dialog.NcName);
-                PrepareEmail(dialog.Recipient, docPath, files, imageFile, operationSummary, machineName);
+                PrepareEmail(dialog.Recipient, docPath, files, imageFile, operationSummary, machineName, postSummary);
                 OpenFolderAndSelect(imageFile);
                 MessageBox.Show("NC y captura generados correctamente.\r\n\r\nSe ha abierto el correo y la carpeta NC con la captura seleccionada para que puedas arrastrarla al mensaje.\r\n\r\n" + string.Join("\r\n", files) + "\r\n" + imageFile, "Postprocesar y preparar correo", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
@@ -202,11 +214,11 @@ namespace EspritNcNotifier
             Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + file + "\"") { UseShellExecute = true });
         }
 
-        private static void PrepareEmail(string recipients, string document, string[] files, string imageFile, string operationSummary, string machineName)
+        private static void PrepareEmail(string recipients, string document, string[] files, string imageFile, string operationSummary, string machineName, string postSummary)
         {
             string subject = "NC listo - " + Path.GetFileNameWithoutExtension(document);
             string body = "El programa NC ya está listo para enviar a máquina.\r\n\r\nDocumento: " + document + "\r\nOperaciones: " +
-                          operationSummary + "\r\nMáquina: " + machineName +
+                          operationSummary + "\r\nMáquina: " + machineName + "\r\nPostprocesador: " + postSummary +
                           "\r\n\r\nFicheros NC:\r\n" + string.Join("\r\n", files) + "\r\n\r\nCaptura de la pieza:\r\n" + imageFile +
                           "\r\n\r\nGenerado por: " + Environment.UserName +
                           "\r\nFecha: " + DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss");
@@ -241,21 +253,81 @@ namespace EspritNcNotifier
 
         private dynamic EnsureNcOutput(dynamic doc, string ncFolder, string suggestedName)
         {
-            dynamic outputs = doc.InitialMachineSetup.NCOutputs; dynamic output = (int)outputs.Count > 0 ? outputs.Item(1) : null;
-            int postCount = output == null ? 0 : (int)output.PostFilesCount; bool valid = postCount > 0;
-            if (valid) for (int i = 1; i <= postCount; i++) if (!File.Exists(Convert.ToString(output.PostProcessorItem(i)))) valid = false;
-            if (!valid)
+            dynamic outputs = doc.InitialMachineSetup.NCOutputs;
+            dynamic output = null, firstOutput = null, firstValidOutput = null;
+            for (int index = 1; index <= (int)outputs.Count; index++)
             {
-                string initial = ""; try { initial = _app.Configuration.GetFileDirectory(EspritConstants.espFileType.espFileTypePostProcessor); } catch { }
-                string currentExtension = output == null ? "nc" : Convert.ToString(output.NCFileExtension);
-                using (var d = new PostProcessorDialog(initial, ncFolder, suggestedName, currentExtension))
-                {
-                    if (d.ShowDialog() != DialogResult.OK) return null;
-                    if (output == null) { Array posts = d.Files.ToArray(); output = outputs.Add(ref posts, ncFolder, suggestedName, d.NcExtension); }
-                    else { output.RemoveAllPostProcessors(); foreach (string file in d.Files) output.AddPostProcessorFile(file); output.NCFileFolder = ncFolder; output.NCFileName = suggestedName; output.NCFileExtension = d.NcExtension; }
-                }
+                dynamic candidate = outputs.Item(index);
+                if (firstOutput == null) firstOutput = candidate;
+                if (!IsNcOutputValid(candidate)) continue;
+                if (firstValidOutput == null) firstValidOutput = candidate;
+                try { if (Convert.ToBoolean(candidate.Enabled)) { output = candidate; break; } } catch { }
+            }
+            if (output == null) output = firstValidOutput;
+            if (output == null)
+            {
+                output = firstOutput;
+                output = ConfigureNcOutput(outputs, output, ncFolder, suggestedName);
+                if (output == null) return null;
             }
             output.Enabled = true; return output;
+        }
+
+        private dynamic ConfigureNcOutput(dynamic outputs, dynamic output, string ncFolder, string suggestedName)
+        {
+            string initial = ""; try { initial = _app.Configuration.GetFileDirectory(EspritConstants.espFileType.espFileTypePostProcessor); } catch { }
+            string currentExtension = output == null ? "nc" : Convert.ToString(output.NCFileExtension);
+            using (var dialog = new PostProcessorDialog(initial, ncFolder, suggestedName, currentExtension))
+            {
+                if (dialog.ShowDialog() != DialogResult.OK) return null;
+                if (output == null)
+                {
+                    Array posts = dialog.Files.ToArray();
+                    return outputs.Add(ref posts, ncFolder, suggestedName, dialog.NcExtension);
+                }
+                output.RemoveAllPostProcessors();
+                foreach (string file in dialog.Files) output.AddPostProcessorFile(file);
+                output.NCFileFolder = ncFolder; output.NCFileName = suggestedName; output.NCFileExtension = dialog.NcExtension;
+                return output;
+            }
+        }
+
+        private bool IsNcOutputValid(dynamic output)
+        {
+            try
+            {
+                int postCount = (int)output.PostFilesCount;
+                if (postCount == 0) return false;
+                for (int index = 1; index <= postCount; index++)
+                {
+                    string postFile = Convert.ToString(output.PostProcessorItem(index));
+                    if (!PostProcessorFileExists(postFile)) return false;
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private bool PostProcessorFileExists(string configuredPath)
+        {
+            if (string.IsNullOrWhiteSpace(configuredPath)) return false;
+            string postFile = Environment.ExpandEnvironmentVariables(configuredPath.Trim().Trim('"'));
+            if (File.Exists(postFile)) return true;
+
+            string postFolder = "";
+            try { postFolder = Convert.ToString(_app.Configuration.GetFileDirectory(EspritConstants.espFileType.espFileTypePostProcessor)); }
+            catch { }
+            if (string.IsNullOrWhiteSpace(postFolder) || !Directory.Exists(postFolder)) return false;
+
+            const string postDirectoryToken = "<PostDirectory>";
+            if (postFile.StartsWith(postDirectoryToken, StringComparison.OrdinalIgnoreCase))
+                postFile = postFile.Substring(postDirectoryToken.Length).TrimStart('\\', '/');
+            if (!Path.IsPathRooted(postFile) && File.Exists(Path.Combine(postFolder, postFile))) return true;
+
+            string fileName = Path.GetFileName(postFile);
+            if (string.IsNullOrWhiteSpace(fileName)) return false;
+            try { return Directory.EnumerateFiles(postFolder, fileName, SearchOption.AllDirectories).Any(); }
+            catch { return false; }
         }
 
         private string GetPostSummary(dynamic output)
@@ -298,12 +370,17 @@ namespace EspritNcNotifier
             Array operationArray = machineOps.ToArray();
             Esprit.NCCode ncCode = (Esprit.NCCode)doc.NCCode;
             Esprit.NCOutput typedOutput = (Esprit.NCOutput)output;
-            Array generated = ncCode.CreateOperationsNCOutput(
-                ref operationArray,
-                typedOutput,
-                EspritConstants.espNCCodeType.espNCCodeStandard,
-                false);
-            if (generated == null || generated.Length == 0) throw new InvalidOperationException("El postprocesador no generó ningún fichero NC.");
+            Array generated;
+            try
+            {
+                generated = ncCode.CreateOperationsNCOutput(
+                    ref operationArray,
+                    typedOutput,
+                    EspritConstants.espNCCodeType.espNCCodeStandard,
+                    false);
+            }
+            catch (Exception ex) { throw new PostprocessorExecutionException("El postprocesador no pudo generar el fichero NC.", ex); }
+            if (generated == null || generated.Length == 0) throw new PostprocessorExecutionException("El postprocesador no generó ningún fichero NC.");
             var final = new List<string>(); int n = generated.Length, index = 0;
             foreach (object item in generated)
             {
@@ -322,6 +399,12 @@ namespace EspritNcNotifier
         private static string NormalizeOperationKey(object value)
         {
             return Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
+        }
+
+        private sealed class PostprocessorExecutionException : Exception
+        {
+            public PostprocessorExecutionException(string message) : base(message) { }
+            public PostprocessorExecutionException(string message, Exception innerException) : base(message, innerException) { }
         }
 
         private void Log(string text) { try { _app.EventWindow.Visible = true; _app.EventWindow.AddMessage(EspritConstants.espMessageType.espMessageTypeInformation, "EspritNcNotifier", text); } catch { } }
